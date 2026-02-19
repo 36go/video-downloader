@@ -17,6 +17,12 @@ ProgressDict = dict
 _YTDLP_EXE_NAME = "yt-dlp_x86.exe"
 _YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_x86.exe"
 _FFMPEG_URL = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+_DEFAULT_FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+_IG_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
 _PROGRESS_PREFIX = "__VD_PROGRESS__:"
 _FILE_PREFIX = "__VD_FILE__:"
 _PROGRESS_RE = re.compile(
@@ -42,6 +48,16 @@ class DownloadRequest:
 class _ToolPaths:
     ytdlp_path: Path
     ffmpeg_location: Optional[Path]
+
+
+def _is_instagram_url(url: str) -> bool:
+    u = (url or "").lower()
+    return "instagram.com/" in u or "instagr.am/" in u
+
+
+def _is_youtube_url(url: str) -> bool:
+    u = (url or "").lower()
+    return "youtube.com/" in u or "youtu.be/" in u
 
 
 def _to_int(value: str) -> Optional[int]:
@@ -203,6 +219,7 @@ def _run_ytdlp(
     on_progress: Optional[Callable[[ProgressDict], None]],
     log: Callable[[str], None],
     cancel_event: Optional[threading.Event],
+    extra_args: Optional[list[str]] = None,
 ) -> None:
     out_template = os.path.join(request.output_dir, "%(title).200s [%(id)s].%(ext)s")
     merge_format = request.merge_output_format or "mp4"
@@ -210,7 +227,7 @@ def _run_ytdlp(
     cmd = [
         str(tools.ytdlp_path),
         "-f",
-        "bv*+ba/b",
+        _DEFAULT_FORMAT,
         "--merge-output-format",
         merge_format,
         "--no-playlist",
@@ -230,6 +247,9 @@ def _run_ytdlp(
         out_template,
     ]
 
+    if extra_args:
+        cmd.extend(extra_args)
+
     if request.cookies_path:
         cmd.extend(["--cookies", request.cookies_path])
 
@@ -247,6 +267,7 @@ def _run_ytdlp(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **_subprocess_window_kwargs(),
     )
     assert process.stdout is not None
 
@@ -284,6 +305,80 @@ def _run_ytdlp(
         raise DownloadError(details)
 
 
+def _subprocess_window_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    kwargs: dict = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+def _download_with_retries(
+    request: DownloadRequest,
+    tools: _ToolPaths,
+    *,
+    on_progress: Optional[Callable[[ProgressDict], None]],
+    log: Callable[[str], None],
+    cancel_event: Optional[threading.Event],
+) -> None:
+    if not _is_instagram_url(request.url):
+        extra_args: list[str] = []
+        if _is_youtube_url(request.url):
+            extra_args.extend(["--extractor-args", "youtube:player_skip=js"])
+        _run_ytdlp(
+            request,
+            tools,
+            on_progress=on_progress,
+            log=log,
+            cancel_event=cancel_event,
+            extra_args=extra_args,
+        )
+        return
+
+    ig_headers = [
+        "--add-header",
+        f"User-Agent:{_IG_USER_AGENT}",
+        "--add-header",
+        "Referer:https://www.instagram.com/",
+        "--add-header",
+        "X-IG-App-ID:936619743392459",
+    ]
+
+    attempts: list[tuple[str, list[str]]] = [("Instagram direct", ig_headers)]
+    if not request.cookies_path:
+        attempts.extend(
+            [
+                ("Instagram retry with Chrome cookies", [*ig_headers, "--cookies-from-browser", "chrome"]),
+                ("Instagram retry with Edge cookies", [*ig_headers, "--cookies-from-browser", "edge"]),
+                ("Instagram retry with Firefox cookies", [*ig_headers, "--cookies-from-browser", "firefox"]),
+            ]
+        )
+
+    errors: list[str] = []
+    for index, (label, extra_args) in enumerate(attempts, start=1):
+        if index > 1:
+            log(f"{label}...")
+        try:
+            _run_ytdlp(
+                request,
+                tools,
+                on_progress=on_progress,
+                log=log,
+                cancel_event=cancel_event,
+                extra_args=extra_args,
+            )
+            return
+        except DownloadError as e:
+            errors.append(f"{label}: {e}")
+
+    raise DownloadError("\n\n".join(errors))
+
+
 def download(
     request: DownloadRequest,
     *,
@@ -301,7 +396,7 @@ def download(
     tools = _ensure_tools(_log)
 
     _log(f"Starting: {request.url}")
-    _run_ytdlp(
+    _download_with_retries(
         request,
         tools,
         on_progress=on_progress,

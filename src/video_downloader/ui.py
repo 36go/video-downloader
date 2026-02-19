@@ -156,7 +156,7 @@ class App(ctk.CTk):
         self.log = ctk.CTkTextbox(log_frame)
         self.log.grid(row=1, column=0, padx=14, pady=(0, 14), sticky="nsew")
         self._log_line("Tip: Missing yt-dlp/FFmpeg tools are downloaded automatically on first run.")
-        self._log_line("Tip: For Instagram, exporting cookies often makes downloads work reliably.")
+        self._log_line("Tip: Instagram retries automatically with browser cookies if needed.")
 
     def _browse_output(self) -> None:
         path = filedialog.askdirectory(initialdir=self.output_dir_var.get() or str(Path.home()))
