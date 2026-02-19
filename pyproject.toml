@@ -1,0 +1,16 @@
+﻿[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-downloader"
+version = "0.1.1"
+description = "Desktop app to download videos from YouTube & Instagram (yt-dlp_x86.exe + auto-tools)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "customtkinter>=5.2.2",
+]
+
+[project.scripts]
+video-downloader = "video_downloader.__main__:main"
